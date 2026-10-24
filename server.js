@@ -33,13 +33,14 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
     }
 
     // Convert buffer to base64
-    const base64Image = imageBuffer.toString('base64');
+    const base64Image = 'data:image/jpeg;base64,' + imageBuffer.toString('base64');
 
     // Call Kling API - image to video
     const formData = new FormData();
     formData.append('prompt', prompt || 'A beautiful video');
-    formData.append('image', new Blob([imageBuffer]), 'image.jpg');
+    formData.append('image', base64Image);
     formData.append('duration', duration || '10');
+    formData.append('model_name', 'kling-v3');
     formData.append('mode', 'std');
 
     const response = await fetch(`${KLING_BASE}/videos/image2video`, {
