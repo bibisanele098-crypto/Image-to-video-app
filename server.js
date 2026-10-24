@@ -1,89 +1,108 @@
 // server.js
-// Backend for the Image-to-Video app. Keeps your Kling API key safe on
-// the server (never in the browser) and proxies generation requests.
+// Backend for the Image-to-Video app.
+// the server (never in the browser) handles API calls.
 
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
+
+const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
 
 const API_KEY = process.env.KLING_API_KEY;
-const KLING_BASE = 'https://api.kling.ai';
+const KLING_BASE = 'https://api.kling.ai/v1';
 
 if (!API_KEY) {
-  console.error('Missing KLING_API_KEY — set it in your environment variables');
+  console.error('Missing KLING_API_KEY environment variable');
   process.exit(1);
 }
 
-const app = express();
-app.use(express.json({ limit: '15mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+// Serve static files from public folder
+app.use(express.static('public'));
 
-function buildAuthToken() {
-  return API_KEY;
-}
-
+// POST /api/generate - accepts image + prompt + duration + scale
 app.post('/api/generate', upload.single('image'), async (req, res) => {
   try {
     const { prompt, duration, scale } = req.body;
-    if (!req.file || !prompt) {
-      return res.status(400).json({ error: 'image and prompt are required' });
+    const imageBuffer = req.file.buffer;
+
+    if (!imageBuffer) {
+      return res.status(400).json({ error: 'Image required' });
     }
 
-    const imageBase64 = req.file.buffer.toString('base64');
-    const token = buildAuthToken();
+    // Convert buffer to base64
+    const base64Image = imageBuffer.toString('base64');
 
-    const klingRes = await fetch(`${KLING_BASE}/v1/videos/image2video`, {
+    // Call Kling API - image to video
+    const formData = new FormData();
+    formData.append('prompt', prompt || 'A beautiful video');
+    formData.append('image', new Blob([imageBuffer]), 'image.jpg');
+    formData.append('duration', duration || '10');
+    formData.append('mode', 'std');
+
+    const response = await fetch(`${KLING_BASE}/videos/image2video`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${API_KEY}`,
       },
-      body: JSON.stringify({
-        model_name: 'kling-v2-master',
-        image: imageBase64,
-        prompt,
-        duration: String(Math.min(Math.max(Number(duration) || 5, 1), 30)),
-        cfg_scale: scale === '1080p' ? 0.8 : scale === '720p' ? 0.6 : 0.4,
-      }),
+      body: formData,
     });
 
-    const data = await klingRes.json();
-    if (!klingRes.ok) {
-      return res.status(klingRes.status).json({ error: data.message || 'Kling API error', raw: data });
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data.message || 'Kling API error starting generation' });
     }
 
     res.json({ taskId: data.data.task_id });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error starting generation' });
+    console.error('Error during generation:', err);
+    res.status(500).json({ error: err.message || 'Failed to start generation' });
   }
 });
 
+// GET /api/status/:taskId - poll for video completion
 app.get('/api/status/:taskId', async (req, res) => {
   try {
-    const token = buildAuthToken();
-    const klingRes = await fetch(`${KLING_BASE}/v1/videos/image2video/${req.params.taskId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const { taskId } = req.params;
+
+    const response = await fetch(`${KLING_BASE}/videos/image2video/${taskId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${API_KEY}`,
+      },
     });
-    const data = await klingRes.json();
-    if (!klingRes.ok) {
-      return res.status(klingRes.status).json({ error: data.message || 'Kling API error' });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data.message || 'Kling API error checking status' });
     }
 
+    // Check if video is ready
     const task = data.data;
-    if (task.task_status === 'succeed') {
-      return res.json({ status: 'done', videoUrl: task.task_result.videos[0].url });
-    } else if (task.task_status === 'failed') {
-      return res.json({ status: 'failed', reason: task.task_status_msg });
+    if (task.status === 'succeeded') {
+      res.json({
+        status: 'completed',
+        videoUrl: task.videos[0].url,
+      });
+    } else if (task.status === 'processing') {
+      res.json({ status: 'processing' });
+    } else {
+      res.json({
+        status: 'error',
+        error: task.error || 'Video generation failed',
+      });
     }
-    res.json({ status: 'processing' });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error checking status' });
+    console.error('Error checking status:', err);
+    res.status(500).json({ error: err.message || 'Failed to check status' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
