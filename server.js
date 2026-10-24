@@ -6,7 +6,6 @@ require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -32,28 +31,31 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'Image required' });
     }
 
-    // Convert buffer to base64
-    const base64Image = 'data:image/jpeg;base64,' + imageBuffer.toString('base64');
+    // Convert buffer to base64 (no data URI prefix)
+    const base64Image = imageBuffer.toString('base64');
 
-    // Call Kling API - image to video
-    const formData = new FormData();
-    formData.append('prompt', prompt || 'A beautiful video');
-    formData.append('image', base64Image);
-    formData.append('duration', duration || '10');
-    formData.append('model_name', 'kling-v3');
-    formData.append('mode', 'std');
+    // Call Kling API - image to video with JSON payload
+    const payload = {
+      prompt: prompt || 'A beautiful video',
+      image: base64Image,
+      duration: parseInt(duration) || 10,
+      model_name: 'kling-v3',
+      mode: 'std'
+    };
 
     const response = await fetch(`${KLING_BASE}/videos/image2video`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/json',
       },
-      body: formData,
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
+      console.error('Kling API error:', data);
       return res.status(response.status).json({ error: data.message || 'Kling API error starting generation' });
     }
 
